@@ -38,27 +38,37 @@ jobs:
             curl -X POST --header "Content-Type: application/json" "https://circleci.com/api/v2/workflow/${CIRCLE_WORKFLOW_ID}/cancel?circle-token=${BUILD_TIMER_TOKEN}"
       - checkout
       - restore_cache:
-          name: "Restore build cache"
-          key: scql-build-comp-{{ arch }}-
+          name: "Restore build engine cache"
+          key: scql-build-engine-{{ arch }}-
       - run:
           name: "build"
-          command: bazel build //engine/... -c opt --ui_event_filters=-info,-debug,-warning --disk_cache=~/.cache/scql_build_cache
+          command: bazel build //engine/... -c opt --ui_event_filters=-info,-debug,-warning --disk_cache=~/.cache/engine_cache
       - run:
           name: "Engine Test"
           command: |
             set +e
             declare -i test_status
-            bazel test //engine/... -c opt --ui_event_filters=-info,-debug,-warning --test_output=errors --disk_cache=~/.cache/scql_build_cache | tee test_result.log; test_status=${PIPESTATUS[0]}
+            bazel test //engine/... -c opt --ui_event_filters=-info,-debug,-warning --test_output=errors --disk_cache=~/.cache/engine_cache | tee test_result.log; test_status=${PIPESTATUS[0]}
             sh .ci/rename-junit-xml.sh
             find bazel-bin/ -executable -type f -name "*_test"  -print0 | xargs -0 tar -cvzf test_binary.tar.gz
             find bazel-testlogs/ -type f -name "test.log"  -print0 | xargs -0 tar -cvzf test_logs.tar.gz
             exit ${test_status}
+      - save_cache:
+          key: scql-build-engine-{{ arch }}-{{ .Environment.CIRCLE_BUILD_NUM }}
+          paths:
+            - ~/.cache/engine_cache
+          when: always
+
+      - restore_cache:
+          name: "Restore build scdb cache"
+          key: scql-build-scdb-{{ arch }}-
       - run:
           name: "SCDB Test"
           command: |
             set +e
             mkdir -p $WORKSPACE/result
-            make
+            export GOBIN=${PWD}/bin
+            export GOCACHE=~/.cache/scdb_cache
             go mod tidy
             go test -timeout=30m -v -coverprofile cover.out ./... | tee $WORKSPACE/result/test.log
             cat $WORKSPACE/result/test.log | go-junit-report > $WORKSPACE/result/TEST-all.xml  # --> junit-report
@@ -67,9 +77,9 @@ jobs:
             cat cover.out | gocover-cobertura > $WORKSPACE/result/cover.xml
             echo test func-coverage $(tail -1 $WORKSPACE/result/func.out | awk '{print $3}')
       - save_cache:
-          key: scql-build-comp-{{ arch }}-{{ .Environment.CIRCLE_BUILD_NUM }}
+          key: scql-build-scdb-{{ arch }}-{{ .Environment.CIRCLE_BUILD_NUM }}
           paths:
-            - /root/.cache/scql_build_cache
+            - ~/.cache/scdb_cache
           when: always
       - store_test_results:
           path: test-results
@@ -86,8 +96,8 @@ jobs:
     steps:
       - checkout
       - restore_cache:
-          name: "Restore build cache"
-          key: scql-build-comp-{{ arch }}-
+          name: "Restore build engine cache"
+          key: scql-build-engine-{{ arch }}-
       - run:
           name: "Install homebrew dependencies"
           command: |
@@ -95,23 +105,33 @@ jobs:
             (cd /opt/homebrew/Cellar/bazel/*.*.*/libexec/bin && curl -fLO https://github.com/bazelbuild/bazel/releases/download/5.4.0/bazel-5.4.0-darwin-arm64 && chmod +x bazel-5.4.0-darwin-arm64)
       - run:
           name: "build"
-          command: bazel build //engine/... -c opt --ui_event_filters=-info,-debug,-warning --disk_cache=~/.cache/scql_build_cache
+          command: bazel build //engine/... -c opt --ui_event_filters=-info,-debug,-warning --disk_cache=~/.cache/engine_cache
       - run:
           name: "Engine Test"
           command: |
             set +e
             declare -i test_status
-            bazel test //engine/... -c opt --ui_event_filters=-info,-debug,-warning --test_output=errors --disk_cache=~/.cache/scql_build_cache | tee test_result.log; test_status=${PIPESTATUS[0]}
+            bazel test //engine/... -c opt --ui_event_filters=-info,-debug,-warning --test_output=errors --disk_cache=~/.cache/engine_cache | tee test_result.log; test_status=${PIPESTATUS[0]}
             sh .ci/rename-junit-xml.sh
             find bazel-bin/ -perm +111 -type f -name "*_test"  -print0 | xargs -0 tar -cvzf test_binary.tar.gz
             find bazel-testlogs/ -type f -name "test.log"  -print0 | xargs -0 tar -cvzf test_logs.tar.gz
             exit ${test_status}
+      - save_cache:
+          key: scql-build-engine-{{ arch }}-{{ .Environment.CIRCLE_BUILD_NUM }}
+          paths:
+            - ~/.cache/engine_cache
+          when: always
+
+      - restore_cache:
+          name: "Restore build scdb cache"
+          key: scql-build-scdb-{{ arch }}-
       - run:
           name: "SCDB Test"
           command: |
             set +e
             mkdir -p $WORKSPACE/result
-            make
+            export GOBIN=${PWD}/bin
+            export GOCACHE=~/.cache/scdb_cache
             go mod tidy
             go test -timeout=30m -v -coverprofile cover.out ./... | tee $WORKSPACE/result/test.log
             cat $WORKSPACE/result/test.log | go-junit-report > $WORKSPACE/result/TEST-all.xml  # --> junit-report
@@ -120,9 +140,9 @@ jobs:
             cat cover.out | gocover-cobertura > $WORKSPACE/result/cover.xml
             echo test func-coverage $(tail -1 $WORKSPACE/result/func.out | awk '{print $3}')
       - save_cache:
-          key: scql-build-comp-{{ arch }}-{{ .Environment.CIRCLE_BUILD_NUM }}
+          key: scql-build-scdb-{{ arch }}-{{ .Environment.CIRCLE_BUILD_NUM }}
           paths:
-            - ~/.cache/scql_build_cache
+            - ~/.cache/scdb_cache
           when: always
       - store_test_results:
           path: test-results
@@ -130,11 +150,67 @@ jobs:
           path: test_binary.tar.gz
       - store_artifacts:
           path: test_logs.tar.gz
+  linux_regtest:
+    machine:
+      image: ubuntu-2004:2022.07.1
+    resource_class: 2xlarge
+    steps:
+      - checkout
+      - restore_cache:
+          name: "Restore engine build cache"
+          key: scql-build-engine-{{ arch }}-
+      - restore_cache:
+          name: "Restore scdb build cache"
+          key: scql-build-scdb-{{ arch }}-
+      - run:
+          name: "Build image"
+          command: |
+            set +e 
+            mkdir image
+            docker run --name scql-dev --mount type=bind,source="$(pwd)",target=/home/admin/dev/ -w /home/admin/dev --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --cap-add=NET_ADMIN --privileged=true secretflow/scql-ci:0.3 \
+              sh -c "export GOBIN=${PWD}/bin
+                     export GOCACHE=~/.cache/scdb_cache
+                     go install ./cmd/... && \
+                     bazel build //engine/... -c opt --ui_event_filters=-info,-debug,-warning --disk_cache=~/.cache/engine_cache"
+            docker cp scql-dev:/home/admin/dev/bazel-bin/engine/exe/scqlengine /image
+
+            docker cp scql-dev:/home/admin/dev/bin/scdbserver /image
+            docker cp scql-dev:/home/admin/dev/bin/scdbclient /image
+            cp docker/scql.Dockerfile /image
+
+            cd /image
+            docker build -f scql.Dockerfile -t scql:latest
+
+      - save_cache:
+          key: scql-build-engine-{{ arch }}-{{ .Environment.CIRCLE_BUILD_NUM }}
+          paths:
+            - ~/.cache/engine_cache
+      - save_cache:
+          key: scql-build-scdb-{{ arch }}-{{ .Environment.CIRCLE_BUILD_NUM }}
+          paths:
+            - ~/.cache/scdb_cache
+      - run:
+          name: "Deploy image"
+          command: |
+            set +e
+            cd .ci/docker-compose
+            docker compose -p regtest up -d 
+            docker ps | grep regtest
+      - run:
+          name: "Run regtest"
+          command: |
+            set +e
+            export $(grep -v '^#' .ci/docker-compose/.env | xargs)
+            export SKIP_CONCURRENT_TEST=true
+            go test ./cmd/regtest/... -v -count=1 -timeout=30m
 
 # Invoke jobs via workflows
 # See: https://circleci.com/docs/2.0/configuration-reference/#workflows
 workflows:
-  ut:
+  Test:
     jobs:
       - linux_ut
       - macOS_ut
+      - linux_regtest:
+          requires:
+            - linux_ut
